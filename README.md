@@ -27,12 +27,13 @@ dimension and checks the geometry.
 
 | Print | Qty | Size (mm) | Volume |
 |---|---|---|---|
-| `stool-seat-quarter-x4.stl` | 4 | 147 x 135 x 14 | 235 cm^3 |
-| `stool-leg-x4.stl` | 4 | 67.5 x 67.5 x 140 | 149 cm^3 |
+| `stool-seat-quarter.stl` | 4 | 147 x 135 x 14 | 235 cm^3 |
+| `stool-leg.stl` | 4 | 67.5 x 67.5 x 140 | 149 cm^3 |
 | M3 heat-set insert, 6 mm long (M3 x 6, ~3.9 mm OD) | 12 | | |
 | M3 x 8 countersunk screw (ISO 10642) | 12 | | |
 
-All four quarters are identical; so are the four legs.
+Each STL holds one part. All four quarters are identical; so are the four legs, so
+duplicate each STL to 4 copies in the slicer.
 
 ## Design
 
@@ -76,7 +77,7 @@ FreeCAD here is the Flatpak. Pass the macro by absolute path.
 # Dimension checks only, no FreeCAD needed.
 python3 build.FCMacro --check
 
-# Full build: writes out/stool-seat-quarter-x4.stl, out/stool-leg-x4.stl,
+# Full build: writes out/stool-seat-quarter.stl, out/stool-leg.stl,
 # out/stool-stand.step (assembly) and out/stool-stand.FCStd.
 flatpak run --command=FreeCADCmd org.freecad.FreeCAD "$PWD/build.FCMacro"
 ```

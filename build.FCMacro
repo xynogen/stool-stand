@@ -4,7 +4,7 @@ Each seam is a vertical sliding dovetail (blocks sideways pull) plus one M3x8
 screw through the socket shelf into a heat-set insert (blocks lift-out). Each
 leg drops into a tapered recess under the seat, so it self-centres, and takes
 two M3x8 screws. Everything that slides in is drafted; every insert hole has a
-flared mouth. Print 4 of each STL. Units: mm.
+flared mouth. Each STL is one part: print 4 copies of each. Units: mm.
 
   python3 build.FCMacro --check      dimension checks, no FreeCAD needed
   FreeCADCmd "$PWD/build.FCMacro"    full build into out/ (or run it in the GUI)
@@ -58,7 +58,7 @@ MARGIN = (SEAT_WIDTH - LOAD_BASE) / 2
 DIR = Path(__file__).resolve().parent
 OUT = DIR / "out"
 NAME = "stool-stand"
-SEAT_STL, LEG_STL = "stool-seat-quarter-x4", "stool-leg-x4"
+SEAT_STL, LEG_STL = "stool-seat-quarter", "stool-leg"
 
 
 def check():

@@ -66,4 +66,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" out/*.stl out/*.step out/*.FCStd \
             --title "$GITHUB_REF_NAME" \
-            --notes "Print 4 x stool-seat-quarter-x4.stl and 4 x stool-leg-x4.stl (already in print orientation). Hardware: 12 x M3 x 6 mm heat-set insert, 12 x M3 x 8 countersunk screw. stool-stand.step is the assembly; stool-stand.FCStd the parametric model. Built by CI from build.FCMacro with FreeCAD ${FREECAD_VERSION}."
+            --notes "Each STL is one part: print 4 x stool-seat-quarter.stl and 4 x stool-leg.stl (duplicate in the slicer; already in print orientation). Hardware: 12 x M3 x 6 mm heat-set insert, 12 x M3 x 8 countersunk screw. stool-stand.step is the assembly; stool-stand.FCStd the parametric model. Built by CI from build.FCMacro with FreeCAD ${FREECAD_VERSION}."
