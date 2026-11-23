@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.FCBak
+*.FCStd
+*.stl
+*.step
+*.3mf
+out/
+# Local agent settings, not project configuration.
+.pi/

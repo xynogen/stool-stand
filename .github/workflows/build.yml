@@ -1,0 +1,69 @@
+name: Build
+
+# Every push and PR: run the checks and build the STLs from build.FCMacro.
+# A v* tag also publishes them as a GitHub release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # gh release create
+
+env:
+  FREECAD_VERSION: "1.1.4"  # Same version the model is built with locally.
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dimension checks (no FreeCAD)
+        run: python3 build.FCMacro --check
+
+      - name: Cache FreeCAD
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/freecad
+          key: freecad-${{ env.FREECAD_VERSION }}
+
+      - name: Install FreeCAD AppImage
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/freecad.AppImage \
+            "https://github.com/FreeCAD/FreeCAD/releases/download/${FREECAD_VERSION}/FreeCAD_${FREECAD_VERSION}-Linux-x86_64-py311.AppImage"
+          chmod +x /tmp/freecad.AppImage
+          cd ~ && /tmp/freecad.AppImage --appimage-extract > /dev/null
+          mv squashfs-root ~/freecad
+
+      - name: Build model
+        env:
+          QT_QPA_PLATFORM: offscreen  # Headless Qt, no X server needed.
+        run: |
+          set -euo pipefail
+          # The bundled freecadcmd finds its libs via $ORIGIN; no AppRun needed.
+          FREECADCMD=$(find ~/freecad -type f -name freecadcmd | head -1)
+          test -x "$FREECADCMD"
+          "$FREECADCMD" "$PWD/build.FCMacro" 2>&1 | tee build.log | grep -a PASS
+          # FreeCADCmd exits 0 even when the macro raises: require the final PASS line.
+          grep -aq "PASS: out/" build.log
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stool-stand
+          path: out/*
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/*.stl out/*.step out/*.FCStd \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Print 4 x stool-seat-quarter-x4.stl and 4 x stool-leg-x4.stl (already in print orientation). Hardware: 12 x M3 x 6 mm heat-set insert, 12 x M3 x 8 countersunk screw. stool-stand.step is the assembly; stool-stand.FCStd the parametric model. Built by CI from build.FCMacro with FreeCAD ${FREECAD_VERSION}."

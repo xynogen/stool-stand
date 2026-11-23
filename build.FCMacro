@@ -1,0 +1,429 @@
+"""Purifier stool: four identical seat quarters + four identical legs, no glue.
+
+Each seam is a vertical sliding dovetail (blocks sideways pull) plus one M3x8
+screw through the socket shelf into a heat-set insert (blocks lift-out). Each
+leg drops into a tapered recess under the seat, so it self-centres, and takes
+two M3x8 screws. Everything that slides in is drafted; every insert hole has a
+flared mouth. Print 4 of each STL. Units: mm.
+
+  python3 build.FCMacro --check      dimension checks, no FreeCAD needed
+  FreeCADCmd "$PWD/build.FCMacro"    full build into out/ (or run it in the GUI)
+
+ASSUMED: load <= 2 kg on a base <= LOAD_BASE. Checked as geometry, not load-tested.
+"""
+import math
+import os
+import sys
+from pathlib import Path
+
+# --- Common parameters: edit these, then rebuild --------------------------------
+SEAT_WIDTH = 270.0   # Square seat. Each printed quarter is half of it plus a 12 mm tongue.
+HEIGHT = 150.0       # Floor to seat top.
+SEAT_THICK = 14.0    # Seat plate.
+LOAD_BASE = 240.0    # Widest base the stool must carry (both purifiers are 240 mm).
+LEG_SPLAY = 14.0     # Foot centre sits this far outside the flange centre, per axis.
+FIT = 0.25           # Clearance per side on the dovetail and the leg recess.
+INSERT_PILOT = 3.6   # Hole for an M3 x 6 mm heat-set insert. Calibrated; test a coupon.
+BED = 180.0          # Printer build volume edge (Bambu A1 mini: 180).
+
+# --- Design constants: change only with care -------------------------------------
+CORNER = 18.0                 # Seat outer corner radius.
+SEAT_CHAMFER = 2.0            # 45 deg; the seat top is the bed face in print.
+LOWER_ROUND = 1.0             # Seat underside rim and the leg floor edge.
+LEG_TOP_W, LEG_FOOT_W, LEG_RADIUS = 35.0, 28.0, 6.0
+FLANGE_W, FLANGE_T, FLANGE_RADIUS = 68.0, 4.0, 8.0
+FLANGE_EDGE = 7.0             # Seat material left outside the flange recess.
+FLANGE_TAPER = 15.0           # deg; flange and recess walls, so the leg self-centres.
+FLANGE_CHAMFER = 1.0          # 45 deg, both flange rims.
+BOLT_INSET = 9.0              # Leg screw centre to flange edge, on opposite corners.
+TAIL_LEN, TAIL_ROOT, TAIL_TIP = 12.0, 68.0, 76.0  # Dovetail tongue.
+DOVETAIL_DRAFT = 5.0          # deg; tongue and socket walls, so the gap stays FIT.
+SHELF = 4.0                   # Socket floor that carries the seam screw head.
+INSERT_DEPTH = 6.4            # Blind pocket for a 6 mm insert.
+INSERT_ENTRY_DEPTH, INSERT_ENTRY_FLARE = 1.0, 0.5  # Lead-in, as in cctv-wiper-freecad.
+SCREW_D, SCREW_HEAD_D, SCREW_LEN = 3.4, 6.72, 8.0  # M3 x 8 countersunk (ISO 10642).
+DRIVER_D = 9.0                # Screwdriver shank that must reach each leg screw.
+
+# --- Derived ---------------------------------------------------------------------
+HALF = SEAT_WIDTH / 2
+LEG_TOP = HALF - FLANGE_EDGE - FLANGE_W / 2   # Flange centre, per axis.
+LEG_FOOT = LEG_TOP + LEG_SPLAY                # Foot centre, per axis.
+TOP_Z = HEIGHT - SEAT_THICK + FLANGE_T        # Leg height: flange top inside the seat.
+JOINT_CENTRE = HALF / 2                       # Dovetail centre along each seam.
+BOLT_OFFSET = FLANGE_W / 2 - BOLT_INSET
+BOLT_POINTS = [(LEG_TOP - BOLT_OFFSET, LEG_TOP + BOLT_OFFSET), (LEG_TOP + BOLT_OFFSET, LEG_TOP - BOLT_OFFSET)]
+RECESS_W = FLANGE_W + 2 * FIT
+MARGIN = (SEAT_WIDTH - LOAD_BASE) / 2
+
+DIR = Path(__file__).resolve().parent
+OUT = DIR / "out"
+NAME = "stool-stand"
+SEAT_STL, LEG_STL = "stool-seat-quarter-x4", "stool-leg-x4"
+
+
+def check():
+    """Dimension rules that need no CAD kernel. The build re-checks the solids."""
+    assert MARGIN >= 10, f"seat only {MARGIN:g} mm wider than the load base per side"
+    assert HALF + TAIL_LEN <= BED and TOP_Z <= BED and FLANGE_W <= BED, "part larger than the printer bed"
+    assert 0 < FIT < 1 and 0 <= LEG_SPLAY <= FLANGE_W / 2, (FIT, LEG_SPLAY)
+    assert 60 <= HEIGHT and SEAT_THICK >= FLANGE_T + INSERT_DEPTH + 3, "too thin over the leg inserts"
+    assert SEAT_THICK - SHELF - INSERT_DEPTH >= 3, "too thin over the seam insert"
+    for grip in (SHELF, FLANGE_T):
+        assert 3 <= SCREW_LEN - grip <= INSERT_DEPTH - 0.4, "M3x8 bites < 3 mm or bottoms out"
+    assert JOINT_CENTRE - TAIL_TIP / 2 - FIT > 8 and HALF - JOINT_CENTRE - TAIL_TIP / 2 - FIT > 8, "dovetail runs off the seam"
+    assert TAIL_LEN + FIT < LEG_TOP - RECESS_W / 2, "dovetail socket hits the leg recess"
+    assert LEG_FOOT + LEG_FOOT_W / 2 <= HALF, "foot sticks out past the seat"
+    lean = FLANGE_T * math.tan(math.radians(FLANGE_TAPER))
+    assert BOLT_INSET >= SCREW_HEAD_D / 2 + lean + FLANGE_CHAMFER, "screw head breaks the flange rim"
+    assert TAIL_ROOT < TAIL_TIP and INSERT_PILOT + 2 * INSERT_ENTRY_FLARE < TAIL_LEN, "dovetail too small"
+    print(f"PASS: seat {SEAT_WIDTH:g} x {SEAT_WIDTH:g}, height {HEIGHT:g}, {MARGIN:g} mm margin around a {LOAD_BASE:g} base")
+    print(f"PASS: quarter {HALF + TAIL_LEN:g} x {HALF:g} x {SEAT_THICK:g}, leg {FLANGE_W:g} x {FLANGE_W:g} x {TOP_Z:g}, bed {BED:g}")
+
+
+# --- FreeCAD helpers (the kernel modules are bound in build()) -------------------
+def rect(x1, y1, x2, y2):
+    return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+
+
+def rounded_square(cx, cy, width, radius):
+    """Polygon with 15-deg facets at the corners: lines only, so it can be tapered."""
+    h, pts = width / 2, []
+    for x, y, start in ((cx + h - radius, cy - h + radius, -90), (cx + h - radius, cy + h - radius, 0),
+                        (cx - h + radius, cy + h - radius, 90), (cx - h + radius, cy - h + radius, 180)):
+        for step in range(7):
+            a = math.radians(start + step * 15)
+            pts.append((x + radius * math.cos(a), y + radius * math.sin(a)))
+    return pts
+
+
+def block(sk, geo):
+    sk.addConstraint(Sketcher.Constraint("Block", sk.addGeometry(geo, False)))
+
+
+def sketch(body, name, loops, z):
+    sk = body.newObject("Sketcher::SketchObject", name)
+    sk.Placement.Base.z = z
+    for pts in loops:
+        for a, b in zip(pts, pts[1:] + pts[:1]):
+            block(sk, Part.LineSegment(App.Vector(a[0], a[1], 0), App.Vector(b[0], b[1], 0)))
+    sk.Document.recompute()
+    assert sk.FullyConstrained, name
+    return sk
+
+
+def rounded_sketch(body, name, centre, width, radius, z):
+    """True tangent arcs: matching arc/line counts give a smooth filleted loft."""
+    sk = body.newObject("Sketcher::SketchObject", name)
+    sk.Placement.Base.z = z
+    h, arcs = width / 2 - radius, []
+    for sx, sy, start in ((1, -1, -90), (1, 1, 0), (-1, 1, 90), (-1, -1, 180)):
+        c = Part.Circle(App.Vector(centre + sx * h, centre + sy * h, 0), App.Vector(0, 0, 1), radius)
+        arcs.append(Part.ArcOfCircle(c, math.radians(start), math.radians(start + 90)))
+    for i, arc in enumerate(arcs):
+        block(sk, arc)
+        block(sk, Part.LineSegment(arc.EndPoint, arcs[(i + 1) % 4].StartPoint))
+    sk.Document.recompute()
+    assert sk.FullyConstrained, name
+    return sk
+
+
+def holes(body, name, points, radius, z):
+    sk = body.newObject("Sketcher::SketchObject", name)
+    sk.Placement.Base.z = z
+    for x, y in points:
+        block(sk, Part.Circle(App.Vector(x, y, 0), App.Vector(0, 0, 1), radius))
+    sk.Document.recompute()
+    assert sk.FullyConstrained, name
+    return sk
+
+
+def checked(feature):
+    s = feature.Shape
+    assert not s.isNull() and s.isValid() and len(s.Solids) == 1, (feature.Name, feature.getStatusString())
+    return s
+
+
+def finish(feature, *hide):
+    feature.Document.recompute()
+    checked(feature)
+    for o in hide:
+        o.Visibility = False
+    return feature
+
+
+def pad(body, name, profile, length, taper=0.0):
+    f = body.newObject("PartDesign::Pad", name)
+    f.Profile, f.Length, f.TaperAngle = profile, length, taper
+    return finish(f, profile)
+
+
+def pocket(body, name, profile, depth, reverse=False, taper=0.0):
+    """Reversed pockets cut toward +Z; a negative taper narrows going deeper."""
+    f = body.newObject("PartDesign::Pocket", name)
+    f.Profile, f.Length, f.Reversed, f.TaperAngle = profile, depth, reverse, taper
+    return finish(f, profile)
+
+
+def dressup(body, kind, name, base, edges, size):
+    f = body.newObject("PartDesign::" + kind, name)
+    f.Base = (base, edges)
+    if kind == "Fillet":
+        f.Radius = size
+    else:
+        f.Size = size
+    return finish(f, base)
+
+
+def edges_where(feature, keep):
+    return ["Edge%d" % (i + 1) for i, e in enumerate(feature.Shape.Edges) if keep(e)]
+
+
+def flat_at(e, z):
+    return abs(e.BoundBox.ZMin - z) < 1e-6 and abs(e.BoundBox.ZMax - z) < 1e-6
+
+
+def inside(shape, x, y, z):
+    return shape.isInside(App.Vector(x, y, z), 0.01, False)
+
+
+def insert_pockets(body, name, points, z):
+    """Blind pilot up from z, then a conical mouth that guides the hot insert."""
+    pilot = pocket(body, name + "Pilot", holes(body, name + "PilotSketch", points, INSERT_PILOT / 2, z), INSERT_DEPTH, True)
+    flare = -math.degrees(math.atan(INSERT_ENTRY_FLARE / INSERT_ENTRY_DEPTH))
+    entry = pocket(body, name, holes(body, name + "EntrySketch", points, INSERT_PILOT / 2 + INSERT_ENTRY_FLARE, z),
+                   INSERT_ENTRY_DEPTH, True, flare)
+    pilot.Visibility = False
+    for x, y in points:
+        assert not inside(entry.Shape, x + INSERT_PILOT / 2 + INSERT_ENTRY_FLARE / 2, y, z + 0.1), name + ": entry missing"
+        assert inside(entry.Shape, x + INSERT_PILOT / 2 + 0.1, y, z + INSERT_ENTRY_DEPTH + 0.1), name + ": entry too deep"
+        assert not inside(entry.Shape, x, y, z + INSERT_DEPTH - 0.2), name + ": pilot too shallow"
+    return entry
+
+
+def countersink(body, base, face_z, name):
+    edges = edges_where(base, lambda e: type(e.Curve).__name__ == "Circle" and flat_at(e, face_z)
+                        and abs(e.Length - math.pi * SCREW_D) < 0.03)
+    assert edges, name
+    sink = dressup(body, "Chamfer", name, base, edges, (SCREW_HEAD_D - SCREW_D) / 2)
+    cones = lambda s: sum(type(f.Surface).__name__ == "Cone" for f in s.Faces)
+    assert cones(sink.Shape) - cones(base.Shape) == len(edges), name + ": countersink missing"
+    return sink
+
+
+def draft(body, base, name, faces, reverse):
+    """Neutral plane = seat top, so the fit-critical top outline is unchanged."""
+    top = max((f.Area, i) for i, f in enumerate(base.Shape.Faces)
+              if type(f.Surface).__name__ == "Plane" and flat_at(f, SEAT_THICK))[1]
+    f = body.newObject("PartDesign::Draft", name)
+    f.Base, f.NeutralPlane = (base, faces), (base, ["Face%d" % (top + 1)])
+    f.Angle, f.Reversed = DOVETAIL_DRAFT, reverse
+    return finish(f, base)
+
+
+def walls(feature, keep):
+    return ["Face%d" % (i + 1) for i, f in enumerate(feature.Shape.Faces)
+            if type(f.Surface).__name__ == "Plane" and abs(f.Surface.Axis.z) < 1e-6 and keep(f.CenterOfMass)]
+
+
+def seat_quarter(doc):
+    """One quarter in assembly coordinates: X=0 / Y=0 are the seams, Z=0 its underside."""
+    b = doc.addObject("PartDesign::Body", "SeatQuarter")
+    edge = HALF - CORNER
+    outline = [(0, 0), (HALF, 0), (HALF, edge)]
+    outline += [(edge + CORNER * math.cos(math.radians(a)), edge + CORNER * math.sin(math.radians(a))) for a in range(15, 91, 15)]
+    outline += [(0, HALF)]
+    seat = pad(b, "Seat", sketch(b, "SeatOutline", [outline], 0), SEAT_THICK)
+
+    # Exposed rim only: round underneath, chamfer on top. The seam edges stay square.
+    rim = lambda f, z: edges_where(f, lambda e: flat_at(e, z) and e.CenterOfMass.x > 0 and e.CenterOfMass.y > 0
+                                   and max(e.CenterOfMass.x, e.CenterOfMass.y) > edge)
+    lower = rim(seat, 0)
+    assert len(lower) == 8, lower
+    rounded = dressup(b, "Fillet", "SeatLowerOuterRound", seat, lower, LOWER_ROUND)
+    upper = rim(rounded, SEAT_THICK)
+    assert len(upper) == 8, upper
+    tip = dressup(b, "Chamfer", "SeatOuterTopChamfer", rounded, upper, SEAT_CHAMFER)
+
+    # One broad tongue on X=0. The neighbour, rotated 90 deg, carries the socket on Y=0.
+    p = JOINT_CENTRE
+    tongue = [(0, p - TAIL_ROOT / 2), (-TAIL_LEN, p - TAIL_TIP / 2), (-TAIL_LEN, p + TAIL_TIP / 2), (0, p + TAIL_ROOT / 2)]
+    male = pad(b, "SlidingDovetail", sketch(b, "DovetailProfile", [tongue], SHELF), SEAT_THICK - SHELF)
+    tip.Visibility = False
+    slot = [(p - TAIL_ROOT / 2 - FIT, 0), (p - TAIL_TIP / 2 - FIT, TAIL_LEN + FIT),
+            (p + TAIL_TIP / 2 + FIT, TAIL_LEN + FIT), (p + TAIL_ROOT / 2 + FIT, 0)]
+    socket = pocket(b, "DovetailSocket", sketch(b, "SocketProfile", [slot], SEAT_THICK), SEAT_THICK - SHELF)
+    male.Visibility = False
+    # Draft both halves alike: the gap stays FIT and the narrow tongue tip leads in.
+    faces = walls(socket, lambda c: c.x < -0.01)
+    assert len(faces) == 3, faces
+    tongue_draft = draft(b, socket, "DovetailTongueDraft", faces, True)
+    faces = walls(tongue_draft, lambda c: 0.01 < c.y < TAIL_LEN + FIT + 0.01 and c.z > SHELF and abs(c.x - p) < TAIL_TIP / 2 + FIT + 0.01)
+    assert len(faces) == 3, faces
+    drafted = draft(b, tongue_draft, "DovetailSocketDraft", faces, False)
+    s = drafted.Shape
+    x = -TAIL_LEN + 0.3
+    assert inside(s, x, p, SEAT_THICK - 0.3) and not inside(s, x, p, SHELF + 0.3), "tongue not drafted"
+    y = TAIL_LEN + FIT - 0.3
+    assert inside(s, p, y, SHELF + 0.3) and not inside(s, p, y, SEAT_THICK - 0.3), "socket not drafted"
+
+    # Seam screw: insert under the tongue, countersunk hole through the socket shelf.
+    # At the assembly rotation (-TAIL_LEN/2, p) lands on (p, TAIL_LEN/2): same axis.
+    inserts = insert_pockets(b, "TailInsertPilots", [(-TAIL_LEN / 2, p)], SHELF)
+    drafted.Visibility = False
+    shelf = pocket(b, "ShelfScrewHoles", holes(b, "ShelfHoleSketch", [(p, TAIL_LEN / 2)], SCREW_D / 2, SHELF), SHELF)
+    inserts.Visibility = False
+    sink = countersink(b, shelf, 0, "ShelfCountersunkHeads")
+
+    # Leg recess: walls lean FLANGE_TAPER (wide mouth) to match the flange.
+    recess = pocket(b, "LegFlangeRecess", sketch(b, "RecessSketch", [rounded_square(LEG_TOP, LEG_TOP, RECESS_W, FLANGE_RADIUS + FIT)], 0),
+                    FLANGE_T, True, -FLANGE_TAPER)
+    sink.Visibility = False
+    pilots = insert_pockets(b, "LegInsertPilots", BOLT_POINTS, FLANGE_T)
+    recess.Visibility = False
+    s = checked(pilots)
+    for x, y in BOLT_POINTS:
+        assert inside(s, x, y, SEAT_THICK - 1), "leg insert pierces the seat top"
+    assert inside(s, -TAIL_LEN / 2, p, SHELF + INSERT_DEPTH + 1), "seam insert pierces the tongue"
+    assert not inside(s, p, TAIL_LEN / 2, 2), "shelf screw hole missing"
+    bb = s.BoundBox
+    assert abs(bb.XLength - HALF - TAIL_LEN) < 0.01 and abs(bb.YLength - HALF) < 0.01, bb
+    return b, pilots
+
+
+def leg(doc):
+    """One leg in assembly coordinates: foot on Z=0, flange top at TOP_Z inside the seat."""
+    b = doc.addObject("PartDesign::Body", "Leg")
+    lo = rounded_sketch(b, "FootSketch", LEG_FOOT, LEG_FOOT_W, LEG_RADIUS, 0)
+    hi = rounded_sketch(b, "UpperLegSketch", LEG_TOP, LEG_TOP_W, LEG_RADIUS, TOP_Z - FLANGE_T)
+    loft = b.newObject("PartDesign::AdditiveLoft", "SplayedLeg")
+    loft.Profile, loft.Sections = lo, [hi]
+    finish(loft, lo, hi)
+    # Flange narrows toward its top, the end that enters the recess.
+    flange = pad(b, "MountFlange", sketch(b, "FlangeSketch", [rounded_square(LEG_TOP, LEG_TOP, FLANGE_W, FLANGE_RADIUS)], TOP_Z - FLANGE_T),
+                 FLANGE_T, -FLANGE_TAPER)
+    loft.Visibility = False
+    lean = FLANGE_T * math.tan(math.radians(FLANGE_TAPER))
+    assert not inside(flange.Shape, LEG_TOP + FLANGE_W / 2 - lean + 0.1, LEG_TOP, TOP_Z - 0.05), "flange not tapered"
+    clear = pocket(b, "M3Clearance", holes(b, "LegBoltSketch", BOLT_POINTS, SCREW_D / 2, TOP_Z), FLANGE_T)
+    flange.Visibility = False
+    sink = countersink(b, clear, TOP_Z - FLANGE_T, "LegCountersunkHeads")
+    # Both flange rims: outer perimeter only, not the leg-to-flange junction.
+    rim = lambda f, z: edges_where(f, lambda e: type(e.Curve).__name__ == "Line" and flat_at(e, z) and max(
+        abs(e.CenterOfMass.x - LEG_TOP), abs(e.CenterOfMass.y - LEG_TOP)) > FLANGE_W / 2 - FLANGE_RADIUS - 0.01)
+    top = dressup(b, "Chamfer", "FlangePrintBedChamfer", sink, rim(sink, TOP_Z), FLANGE_CHAMFER)
+    under = dressup(b, "Chamfer", "FlangeExposedEdgeChamfer", top, rim(top, TOP_Z - FLANGE_T), FLANGE_CHAMFER)
+    foot = edges_where(under, lambda e: flat_at(e, 0))
+    assert len(foot) == 8, foot
+    rounded = dressup(b, "Fillet", "FootGroundRound", under, foot, LOWER_ROUND)
+    s = rounded.Shape
+    for x, y in BOLT_POINTS:
+        assert not inside(s, x, y, TOP_Z - 2), "leg screw hole missing"
+        driver = Part.makeCylinder(DRIVER_D / 2, TOP_Z - FLANGE_T, App.Vector(x, y, 0))
+        assert s.common(driver).Volume < 0.01, "leg blocks the screwdriver"
+    return b, rounded
+
+
+def export_stl(shape, name):
+    mesh = Mesh.Mesh(shape.tessellate(0.05))
+    assert mesh.isSolid() and not mesh.hasNonManifolds(), name + " not watertight"
+    tmp = OUT / (name + ".tmp.stl")
+    mesh.write(str(tmp))
+    os.replace(tmp, OUT / (name + ".stl"))
+
+
+def on_bed(shape, rx, dz):
+    """Rotate about X, move the lowest real face onto Z=0 and into the +X/+Y quadrant."""
+    s = shape.copy()
+    s.rotate(App.Vector(), App.Vector(1, 0, 0), rx)
+    bb = s.optimalBoundingBox()  # Loft splines bulge the plain BoundBox.
+    s.translate(App.Vector(-bb.XMin, -bb.YMin, -bb.ZMin))
+    bb = s.optimalBoundingBox()
+    assert abs(bb.ZMin) < 0.01 and abs(bb.ZMax - dz) < 0.01 and max(bb.XLength, bb.YLength, bb.ZLength) <= BED, bb
+    return s
+
+
+def build():
+    global App, Part, Sketcher, Mesh
+    import FreeCAD as App
+    import Mesh
+    import Part
+    import Sketcher
+
+    check()
+    OUT.mkdir(exist_ok=True)
+    for d in list(App.listDocuments().values()):
+        if d.Name.startswith("StoolStand"):
+            App.closeDocument(d.Name)
+    doc = App.newDocument("StoolStand")
+    doc.Label = NAME
+    seat_body, seat_tip = seat_quarter(doc)
+    leg_body, leg_tip = leg(doc)
+    quarter, leg_shape = seat_tip.Shape, leg_tip.Shape
+
+    # Assembly: 4 quarters + 4 legs, each rotated about Z. Nothing may overlap.
+    quarters, legs = [], []
+    for a in (0, 90, 180, 270):
+        q = quarter.copy()
+        q.rotate(App.Vector(), App.Vector(0, 0, 1), a)
+        q.translate(App.Vector(0, 0, HEIGHT - SEAT_THICK))
+        lg = leg_shape.copy()
+        lg.rotate(App.Vector(), App.Vector(0, 0, 1), a)
+        quarters.append(q)
+        legs.append(lg)
+    parts = quarters + legs
+    assert all(parts[i].common(parts[j]).Volume < 0.01 for i in range(8) for j in range(i)), "parts overlap"
+    assembly = Part.makeCompound(parts)
+    bb = assembly.optimalBoundingBox()
+    assert assembly.isValid() and len(assembly.Solids) == 8
+    assert abs(bb.XLength - SEAT_WIDTH) < 0.01 and abs(bb.YLength - SEAT_WIDTH) < 0.01 and abs(bb.ZLength - HEIGHT) < 0.01, bb
+    # Self-centring: a leg nudged by 2 x FIT sideways must hit the tapered recess wall.
+    nudged = legs[0].copy()
+    nudged.translate(App.Vector(2 * FIT, 0, 0))
+    assert quarters[0].common(nudged).Volume > 1, "leg recess does not centre the leg"
+
+    # Ghost purifiers: both bases (round and square) sit on the seat without overlap.
+    ghosts = {"GhostRoundPurifier": Part.makeCylinder(LOAD_BASE / 2, 500, App.Vector(0, 0, HEIGHT)),
+              "GhostSquarePurifier": Part.makeBox(LOAD_BASE, LOAD_BASE, 500, App.Vector(-LOAD_BASE / 2, -LOAD_BASE / 2, HEIGHT))}
+    for name, g in ghosts.items():
+        assert assembly.common(g).Volume < 0.01 and g.BoundBox.XLength <= SEAT_WIDTH - 2 * 10, name
+
+    # Exploded view: quarters out and up, legs out and down, for the assembly guide.
+    exploded = []
+    for i, (q, lg) in enumerate(zip(quarters, legs)):
+        sx, sy = ((1, 1), (-1, 1), (-1, -1), (1, -1))[i]
+        exploded += [q.translated(App.Vector(sx * 24, sy * 24, 28)), lg.translated(App.Vector(sx * 54, sy * 54, -16))]
+
+    for name, shape, shown in (("Assembly", assembly, True), ("Exploded", Part.makeCompound(exploded), False),
+                               *((n, g, False) for n, g in ghosts.items())):
+        o = doc.addObject("Part::Feature", name)
+        o.Shape = shape
+        o.Visibility = shown
+        if App.GuiUp and name.startswith("Ghost"):
+            o.ViewObject.Transparency = 75
+    seat_body.Visibility = leg_body.Visibility = False
+    # Seat body shown in place under the legs; feature shapes stay in body coordinates.
+    seat_body.Placement = App.Placement(App.Vector(0, 0, HEIGHT - SEAT_THICK), App.Rotation())
+    doc.recompute()
+
+    # Print orientation: seat top face down (no roof over the recess), leg flange down.
+    export_stl(on_bed(quarter, 180, SEAT_THICK), SEAT_STL)
+    export_stl(on_bed(leg_shape, 180, TOP_Z), LEG_STL)
+    tmp = OUT / (NAME + ".tmp.step")
+    assembly.exportStep(str(tmp))
+    os.replace(tmp, OUT / (NAME + ".step"))
+    doc.saveAs(str(OUT / (NAME + ".FCStd")))
+    if App.GuiUp:
+        import FreeCADGui
+        FreeCADGui.activeDocument().activeView().viewAxonometric()
+        FreeCADGui.SendMsgToActiveView("ViewFit")
+    else:
+        App.closeDocument(doc.Name)
+    print(f"PASS: 8 solids, no overlap, {SEAT_WIDTH:g} x {SEAT_WIDTH:g} x {HEIGHT:g}; leg self-centres; ghosts fit")
+    print(f"PASS: out/{SEAT_STL}.stl, out/{LEG_STL}.stl, out/{NAME}.step, out/{NAME}.FCStd")
+
+
+if __name__ == "__main__":
+    if "--check" in sys.argv:
+        check()
+    else:
+        build()
